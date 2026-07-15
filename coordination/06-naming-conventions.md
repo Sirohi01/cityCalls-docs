@@ -1,0 +1,118 @@
+# Coordination 06 — Naming Conventions
+
+**This document is locked early and binding on every subsequent document.** If a later doc needs a name not covered here, add it here first, then use it — never invent a one-off name in a downstream doc.
+
+## 1. General Casing Rules
+
+| Context | Convention | Example |
+|---|---|---|
+| MongoDB collection names | plural, snake_case | `service_requests`, `customers`, `activity_logs` |
+| Mongoose model names (TS) | PascalCase, singular | `ServiceRequest`, `Customer`, `ActivityLog` |
+| Document field names (DB + API JSON) | camelCase | `customerId`, `scheduledAt`, `assignedTo` |
+| TypeScript types/interfaces | PascalCase | `ServiceRequestStatus`, `CreateLeadInput` |
+| Dart classes/models | PascalCase | `ServiceRequestStatus`, `CreateLeadInput` (mirrors TS name 1:1 where the same concept exists) |
+| Enum values (wire format: DB + API JSON) | SCREAMING_SNAKE_CASE string | `"IN_PROGRESS"`, `"AWAITING_CUSTOMER_APPROVAL"` |
+| REST route paths | kebab-case, plural resource nouns | `/api/v1/service-requests`, `/api/v1/happy-calls` |
+| Query parameters | camelCase | `?branchId=...&status=NEW&page=1` |
+| Environment variables | SCREAMING_SNAKE_CASE | `MONGODB_URI`, `AISENSY_API_KEY` |
+| React components (admin-web) | PascalCase, `.tsx` | `ServiceRequestTable.tsx` |
+| Flutter widgets/screens | PascalCase, `snake_case.dart` filename | `ServiceRequestListScreen` in `service_request_list_screen.dart` |
+| Git branches | per [coordination/02-git-and-branch-strategy.md](02-git-and-branch-strategy.md) | `manish/backend-service-requests` |
+
+**Rule:** the same concept always has the same name across DB, API, TS, and Dart — only the casing style changes per that layer's convention above. Never rename a concept between layers (e.g. do not call it `serviceReq` in one place and `service_request` in another beyond the prescribed casing transform).
+
+## 2. Entity Naming (canonical singular names — use these exactly)
+
+| Canonical name | Collection | Notes |
+|---|---|---|
+| User | `users` | Any authenticated actor: staff, vendor user, or customer (see [05-user-roles-and-permissions.md](../05-user-roles-and-permissions.md) for whether customer is same collection or separate — resolved there) |
+| Branch | `branches` | |
+| SubBranch | `sub_branches` | References parent `branchId` |
+| Team | `teams` | |
+| Employee | `employees` | Profile extension of a `User` with role in staff set |
+| Vendor | `vendors` | Company-level entity |
+| VendorTechnician | `vendor_technicians` | A `User` under a `Vendor` |
+| Customer | `customers` | |
+| CustomerAddress | embedded in `customers.addresses[]` | Not a separate collection — see [09-database-architecture.md](../09-database-architecture.md) |
+| CustomerProduct | `customer_products` | An appliance owned by a customer — separate collection (reused across many Calls/ServiceRequests) |
+| Brand | `brands` (master) | |
+| ProductType | `product_types` (master) | |
+| Service | `services` | The dynamic catalog entry |
+| Call | `calls` | One row per call event, `callType` enum distinguishes initial/requirement/pre-service/visit/post-service/happy-call — see §4 |
+| Lead | `leads` | |
+| ServiceRequest | `service_requests` | The core work-order entity |
+| ServiceVisit | `service_visits` | One field visit against a `ServiceRequest`; `serviceRequestId` FK |
+| HappyCall | `happy_calls` | `serviceRequestId` FK; distinct from generic `Call` because of its structured outcome fields, though it may also produce a `Call` log entry — resolved in [06-complete-workflow-document.md](../06-complete-workflow-document.md) |
+| ReopenRecord | `reopen_records` | Links old `serviceRequestId` to new `serviceRequestId` |
+| Estimate | `estimates` | |
+| ProformaInvoice | `proforma_invoices` | |
+| Invoice | `invoices` | |
+| PaymentReceipt | `payment_receipts` | |
+| CreditNote / DebitNote | `credit_notes` / `debit_notes` | |
+| VendorInvoice / VendorPayout | `vendor_invoices` / `vendor_payouts` | |
+| ActivityLog | `activity_logs` | Generic audit/timeline entity, `{entityType, entityId}` keyed |
+| Notification | `notifications` | |
+| NotificationTemplate | `notification_templates` | |
+| Campaign | `campaigns` | WhatsApp/email marketing |
+| Contract | `contracts` | Reserved (P3/AMC), schema stub only for now |
+
+Master/config collections (all under the Config/Masters engine, detailed in [09-database-architecture.md](../09-database-architecture.md)): `service_categories`, `symptoms`, `defects`, `solutions`, `parts`, `units`, `tax_rates`, `priorities`, `lead_sources`, `call_types`, `appointment_slots`, `payment_methods`, `numbering_series`, `policies` (reopen/warranty/cancellation/reschedule), `role_permissions`.
+
+## 3. ID & Numbering Conventions
+
+- Internal primary keys: MongoDB default `_id` (ObjectId), never exposed as the "human" identifier in UI.
+- Human-facing document numbers use a **prefix + branch code + financial-year + sequence** pattern, generated by the Numbering Engine ([09-database-architecture.md](../09-database-architecture.md)):
+  - Service Request: `SR-{branchCode}-{FY}-{seq}` e.g. `SR-DEL01-2526-000482`
+  - Lead: `LD-{branchCode}-{FY}-{seq}`
+  - Call: `CL-{branchCode}-{FY}-{seq}`
+  - Estimate: `EST-{branchCode}-{FY}-{seq}`
+  - Proforma Invoice: `PI-{branchCode}-{FY}-{seq}`
+  - Tax Invoice: `INV-{branchCode}-{FY}-{seq}`
+  - Payment Receipt: `RC-{branchCode}-{FY}-{seq}`
+  - Credit/Debit Note: `CN-{branchCode}-{FY}-{seq}` / `DN-{branchCode}-{FY}-{seq}`
+  - Customer: `CU-{seq}` (not branch- or FY-scoped — a customer is org-wide)
+  - Vendor: `VN-{seq}`
+- `{FY}` format: `2526` for FY 2025-26 (Apr–Mar, India convention) — confirmed default, override in [21-open-decisions-and-clarifications.md](../21-open-decisions-and-clarifications.md) if the business's financial year differs.
+- All prefixes and the sequence-reset boundary (per FY vs. never-reset) are admin-configurable per document type per branch — the pattern above is the **default**, not hardcoded.
+
+## 4. Enum Naming — Canonical Value Sets
+
+These are the locked wire-format values. Full lifecycle/transition detail for the status-bearing ones is in [07-status-transition-matrix.md](../07-status-transition-matrix.md); this section is the name registry so no document invents a variant spelling.
+
+**CallType**: `INITIAL`, `REQUIREMENT`, `PRE_SERVICE`, `VISIT_UPDATE`, `POST_SERVICE_FOLLOWUP`, `HAPPY_CALL`
+
+**CallDirection**: `INCOMING`, `OUTGOING`
+
+**LeadStage**: `NEW`, `CONTACT_ATTEMPTED`, `CONNECTED`, `REQUIREMENT_COLLECTED`, `QUALIFIED`, `ESTIMATE_REQUIRED`, `ESTIMATE_SHARED`, `NEGOTIATION`, `FOLLOW_UP`, `CONVERTED`, `LOST`, `NOT_INTERESTED`, `INVALID`, `DUPLICATE`
+
+**ServiceRequestStatus**: see full list and transition rules in [07-status-transition-matrix.md](../07-status-transition-matrix.md)
+
+**AssigneeType** (polymorphic target of an assignment): `BRANCH`, `SUB_BRANCH`, `TEAM`, `EMPLOYEE`, `VENDOR`, `OUTSOURCED_PARTNER`
+
+**Priority**: `LOW`, `NORMAL`, `HIGH`, `URGENT` (master-editable labels, these are the fixed sort-order codes)
+
+**PaymentMethod**: `CASH`, `UPI`, `CARD`, `BANK_TRANSFER`, `GATEWAY`, `CHEQUE`, `CREDIT`
+
+**PaymentStatus**: `PENDING`, `PARTIALLY_PAID`, `PAID`, `REFUNDED`
+
+**NotificationChannel**: `IN_APP`, `PUSH`, `EMAIL`, `WHATSAPP`, `SMS`
+
+**ConsentChannel / ConsentState**: channel same as above (subset: `EMAIL`, `WHATSAPP`, `SMS`); state = `GRANTED`, `REVOKED`, `NOT_ASKED`
+
+**DocumentType** (for numbering + generic doc handling): `SERVICE_REQUEST`, `LEAD`, `CALL`, `ESTIMATE`, `PROFORMA_INVOICE`, `INVOICE`, `PAYMENT_RECEIPT`, `CREDIT_NOTE`, `DEBIT_NOTE`, `CUSTOMER`, `VENDOR`
+
+## 5. API Route Naming Pattern
+
+`/api/v1/{resource-kebab-plural}` for collections, `/api/v1/{resource-kebab-plural}/{id}` for a single record, `/api/v1/{resource-kebab-plural}/{id}/{sub-resource-kebab-plural}` for nested (e.g. `/api/v1/service-requests/{id}/status-history`). Action endpoints that aren't pure CRUD use a verb suffix: `/api/v1/service-requests/{id}/assign`, `/api/v1/leads/{id}/convert`. Full standard in [10-api-standards.md](../10-api-standards.md).
+
+## 6. File/Folder Naming (repos)
+
+Per [00-project-overview.md](../00-project-overview.md) §7-8 (multi-repo, no shared packages): `citycalls-admin-web`, `citycalls-customer-mobile`, `citycalls-vendor-mobile`, `citycalls-api`, `citycalls-docs` — five independent repos, each named `citycalls-{purpose}`. Within `citycalls-api`, one folder per domain module named to match §2's canonical entity groupings (e.g. `src/modules/service-requests`, `src/modules/calls`, `src/modules/vendors`), each containing `*.model.ts`, `*.controller.ts`, `*.service.ts`, `*.routes.ts`, `*.validation.ts`.
+
+## 7. Terms to Never Use Interchangeably
+
+- "Ticket" — do not use; the canonical term is **Service Request**.
+- "Job" — acceptable only as informal UI copy for technicians (e.g. "My Jobs" screen title); the data entity is always **Service Request** or **Service Visit**.
+- "Complaint" — used only for the customer-initiated dissatisfaction flow (post-service or reopen trigger), not as a synonym for Service Request.
+- "Booking" — acceptable as UI copy for the customer-app creation flow; the created entity is a **Service Request**, not a separate "Booking" entity.
+- "Order" — do not use anywhere; this is a service business, not e-commerce.
