@@ -1,0 +1,3366 @@
+openapi: 3.0.3
+info:
+  title: CityCalls API
+  version: 1.0.0
+  description: >
+    Canonical API contract for the CityCalls backend (citycalls-api), covering
+    Phases 1-10 of docs/manish/16-manifest-and-task-checklist.md. This is the
+    single source of truth every other repo (citycalls-admin-web,
+    citycalls-customer-mobile, citycalls-vendor-mobile) syncs a local copy of
+    via scripts/sync-contracts.sh — see
+    docs/manish/01-project-and-repository-setup.md §3.
+
+    Every response is wrapped in the standard envelope
+    { success, message, data, meta, errors } — see ApiResponseBase below.
+    Every endpoint except /auth/login, /auth/refresh, /auth/otp/*, and
+    /auth/password/reset* requires a Bearer access token; most additionally
+    require a role/module/action permission (RBAC) — the description on each
+    operation names the permission key checked
+    (module.action, per docs/05-user-roles-and-permissions.md), and the
+    dataScope that permission resolves to (OWN/TEAM/SUB_BRANCH/BRANCH/VENDOR/ALL)
+    further filters what that caller can see, per docs/17-security-and-audit.md §2.
+  contact:
+    name: Manish (backend)
+servers:
+  - url: http://localhost:4000/api/v1
+    description: Local development
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+  - name: Users
+  - name: Organization
+  - name: Config
+    description: Generic master-list engine (docs/09-database-architecture.md §3)
+  - name: Employees
+  - name: Vendors
+  - name: Customers
+  - name: Catalog
+  - name: Calls
+  - name: Leads
+  - name: ServiceRequests
+  - name: FieldExecution
+  - name: Files
+  - name: Finance
+  - name: VendorFinance
+  - name: HappyCalls
+  - name: Notifications
+  - name: Marketing
+  - name: AI
+  - name: Reports
+  - name: ImportExport
+
+paths:
+  # ─────────────────────────── Auth ───────────────────────────
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in with email/mobile + password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier, password]
+              properties:
+                identifier: { type: string, description: "Email or mobile" }
+                password: { type: string }
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AuthTokens' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Exchange a refresh token for a new access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: New token pair
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AuthTokens' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke a refresh token's session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+  /auth/otp/request:
+    post:
+      tags: [Auth]
+      summary: Request a login OTP for a mobile number (customer app)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mobile]
+              properties:
+                mobile: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+  /auth/otp/verify:
+    post:
+      tags: [Auth]
+      summary: Verify an OTP and log in (progressively registers the Customer on first verify)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mobile, otp]
+              properties:
+                mobile: { type: string }
+                otp: { type: string, minLength: 6, maxLength: 6 }
+      responses:
+        '200':
+          description: OTP verified, logged in
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AuthTokens' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/password/reset-request:
+    post:
+      tags: [Auth]
+      summary: Request a password-reset token (delivered via the notification engine)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier]
+              properties:
+                identifier: { type: string, description: "Email or mobile" }
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+  /auth/password/reset:
+    post:
+      tags: [Auth]
+      summary: Reset password using a single-use reset token (forces logout of all sessions)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, newPassword]
+              properties:
+                token: { type: string }
+                newPassword: { type: string, minLength: 8 }
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+  /auth/sessions:
+    get:
+      tags: [Auth]
+      summary: List my active sessions
+      responses:
+        '200':
+          description: Sessions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/Session' } }
+  /auth/sessions/{id}:
+    delete:
+      tags: [Auth]
+      summary: Revoke one session
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /auth/sessions/revoke-all:
+    post:
+      tags: [Auth]
+      summary: Revoke every session for the current user (used after a password reset)
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+
+  # ─────────────────────────── Users ───────────────────────────
+  /users:
+    get:
+      tags: [Users]
+      summary: List users (permission users.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: role, in: query, schema: { $ref: '#/components/schemas/Role' } }
+        - { name: branchId, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [ACTIVE, INACTIVE] } }
+        - { name: q, in: query, schema: { type: string } }
+      responses:
+        '200': { $ref: '#/components/responses/UserListOk' }
+    post:
+      tags: [Users]
+      summary: Create a user (permission users.create)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, mobile, password, role]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                mobile: { type: string }
+                password: { type: string, minLength: 8 }
+                role: { $ref: '#/components/schemas/Role' }
+                branchId: { type: string }
+                subBranchId: { type: string }
+                teamId: { type: string }
+                vendorId: { type: string }
+      responses:
+        '201': { $ref: '#/components/responses/UserOk' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /users/{id}:
+    get:
+      tags: [Users]
+      summary: Get a user (permission users.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200': { $ref: '#/components/responses/UserOk' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Users]
+      summary: Update a user (permission users.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                role: { $ref: '#/components/schemas/Role' }
+                branchId: { type: string }
+                subBranchId: { type: string }
+                teamId: { type: string }
+                vendorId: { type: string }
+                status: { type: string, enum: [ACTIVE, INACTIVE] }
+      responses:
+        '200': { $ref: '#/components/responses/UserOk' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ─────────────────────────── Organization ───────────────────────────
+  /branches:
+    get:
+      tags: [Organization]
+      summary: List branches (permission organization.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: active, in: query, schema: { type: boolean } }
+        - { name: q, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Branches
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/Branch' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+    post:
+      tags: [Organization]
+      summary: Create a branch (permission organization.create)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BranchInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Branch' } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /branches/{id}:
+    get:
+      tags: [Organization]
+      summary: Get a branch (permission organization.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Branch
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Branch' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Organization]
+      summary: Update a branch (permission organization.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BranchInput' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Branch' } }
+  /sub-branches:
+    get:
+      tags: [Organization]
+      summary: List sub-branches (permission organization.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: active, in: query, schema: { type: boolean } }
+        - { name: q, in: query, schema: { type: string } }
+      responses: { '200': { $ref: '#/components/responses/GenericListOk' } }
+    post:
+      tags: [Organization]
+      summary: Create a sub-branch (permission organization.create)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [branchId, name, code]
+              properties:
+                branchId: { type: string }
+                name: { type: string }
+                code: { type: string }
+                coverage: { type: object, properties: { pinCodes: { type: array, items: { type: string } } } }
+                managerId: { type: string }
+      responses: { '201': { $ref: '#/components/responses/GenericOk' } }
+  /sub-branches/{id}:
+    patch:
+      tags: [Organization]
+      summary: Update a sub-branch (permission organization.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /teams:
+    get:
+      tags: [Organization]
+      summary: List teams (permission organization.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: active, in: query, schema: { type: boolean } }
+        - { name: q, in: query, schema: { type: string } }
+      responses: { '200': { $ref: '#/components/responses/GenericListOk' } }
+    post:
+      tags: [Organization]
+      summary: Create a team (permission organization.create)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [branchId, name]
+              properties:
+                branchId: { type: string }
+                subBranchId: { type: string }
+                name: { type: string }
+                leadId: { type: string }
+                memberIds: { type: array, items: { type: string } }
+      responses: { '201': { $ref: '#/components/responses/GenericOk' } }
+  /teams/{id}:
+    patch:
+      tags: [Organization]
+      summary: Update a team (permission organization.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+
+  # ─────────────────────────── Config / Masters ───────────────────────────
+  /masters/{masterType}:
+    get:
+      tags: [Config]
+      summary: List master entries of a given type (permission config.view)
+      parameters:
+        - { name: masterType, in: path, required: true, schema: { $ref: '#/components/schemas/MasterType' } }
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: active, in: query, schema: { type: boolean } }
+        - { name: parentId, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Masters
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/Master' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+    post:
+      tags: [Config]
+      summary: Create a master entry (permission config.manageSettings)
+      parameters:
+        - { name: masterType, in: path, required: true, schema: { $ref: '#/components/schemas/MasterType' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, label]
+              properties:
+                key: { type: string }
+                label: { type: string }
+                parentId: { type: string }
+                meta: { type: object }
+                sortOrder: { type: integer }
+                active: { type: boolean }
+      responses: { '201': { $ref: '#/components/responses/GenericOk' } }
+  /masters/{masterType}/{id}:
+    patch:
+      tags: [Config]
+      summary: Update a master entry (permission config.manageSettings)
+      parameters:
+        - { name: masterType, in: path, required: true, schema: { $ref: '#/components/schemas/MasterType' } }
+        - { $ref: '#/components/parameters/IdParam' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+    delete:
+      tags: [Config]
+      summary: Delete a master entry (permission config.manageSettings)
+      parameters:
+        - { name: masterType, in: path, required: true, schema: { $ref: '#/components/schemas/MasterType' } }
+        - { $ref: '#/components/parameters/IdParam' }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+
+  # ─────────────────────────── Employees ───────────────────────────
+  /employees:
+    get:
+      tags: [Employees]
+      summary: List employees (permission employees.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: branchId, in: query, schema: { type: string } }
+        - { name: skill, in: query, schema: { type: string } }
+        - { name: active, in: query, schema: { type: boolean } }
+      responses:
+        '200':
+          description: Employees
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/Employee' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+    post:
+      tags: [Employees]
+      summary: Create an employee record for an existing user (permission employees.create)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, branchId]
+              properties:
+                userId: { type: string }
+                branchId: { type: string }
+                subBranchId: { type: string }
+                teamId: { type: string }
+                skills: { type: array, items: { type: string } }
+                certifications: { type: array, items: { type: string } }
+                dailyCapacity: { type: integer, default: 5 }
+      responses: { '201': { $ref: '#/components/responses/GenericOk' } }
+  /employees/{id}:
+    get:
+      tags: [Employees]
+      summary: Get an employee (permission employees.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Employee
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Employee' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Employees]
+      summary: Update an employee (permission employees.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+
+  # ─────────────────────────── Vendors ───────────────────────────
+  /vendors:
+    get:
+      tags: [Vendors]
+      summary: List vendors (permission vendors.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: pinCode, in: query, schema: { type: string } }
+        - { name: active, in: query, schema: { type: boolean } }
+        - { name: blacklisted, in: query, schema: { type: boolean } }
+        - { name: q, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Vendors
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/Vendor' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+    post:
+      tags: [Vendors]
+      summary: Onboard a vendor (permission vendors.create)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [companyName]
+              properties:
+                companyName: { type: string }
+                contactPersons:
+                  type: array
+                  items:
+                    type: object
+                    properties: { name: { type: string }, mobile: { type: string }, role: { type: string } }
+                serviceAreas: { type: object, properties: { pinCodes: { type: array, items: { type: string } } } }
+                servicesOffered: { type: array, items: { type: string } }
+                brandsHandled: { type: array, items: { type: string } }
+                productTypesHandled: { type: array, items: { type: string } }
+                skills: { type: array, items: { type: string } }
+                gst: { type: string }
+                pan: { type: string }
+                commissionModel: { type: string, enum: [FIXED, SERVICE_WISE], default: FIXED }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Vendor' } }
+  /vendors/{id}:
+    get:
+      tags: [Vendors]
+      summary: Get a vendor (permission vendors.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Vendor
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Vendor' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Vendors]
+      summary: Update a vendor (permission vendors.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /vendors/{id}/blacklist:
+    patch:
+      tags: [Vendors]
+      summary: Blacklist / un-blacklist a vendor (permission vendors.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [blacklisted]
+              properties:
+                blacklisted: { type: boolean }
+                blacklistReason: { type: string }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /vendors/{id}/technicians:
+    get:
+      tags: [Vendors]
+      summary: List a vendor's technician roster (permission vendors.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/GenericListOk' } }
+    post:
+      tags: [Vendors]
+      summary: Add a technician to a vendor's roster (permission vendors.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, vendorId]
+              properties:
+                userId: { type: string }
+                vendorId: { type: string }
+                skills: { type: array, items: { type: string } }
+      responses: { '201': { $ref: '#/components/responses/GenericOk' } }
+
+  # ─────────────────────────── Customers ───────────────────────────
+  /customers:
+    get:
+      tags: [Customers]
+      summary: List customers (permission customers.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: customerType, in: query, schema: { type: string, enum: [INDIVIDUAL, BUSINESS] } }
+        - { name: blacklisted, in: query, schema: { type: boolean } }
+        - { name: q, in: query, schema: { type: string, description: "matches name or contact mobile" } }
+      responses:
+        '200':
+          description: Customers
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/Customer' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+    post:
+      tags: [Customers]
+      summary: Create a customer (permission customers.create; runs non-blocking duplicate detection)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomerInput' }
+      responses:
+        '201':
+          description: Created — data.customer is the record, data.potentialDuplicates flags near-matches without blocking creation
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          customer: { $ref: '#/components/schemas/Customer' }
+                          potentialDuplicates: { type: array, items: { type: object } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /customers/duplicates:
+    get:
+      tags: [Customers]
+      summary: Find potential duplicate customers by mobile/gstin/businessName/name (permission customers.view)
+      parameters:
+        - { name: mobile, in: query, schema: { type: string } }
+        - { name: gstin, in: query, schema: { type: string } }
+        - { name: businessName, in: query, schema: { type: string } }
+        - { name: name, in: query, schema: { type: string } }
+      responses: { '200': { $ref: '#/components/responses/GenericListOk' } }
+  /customers/{id}:
+    get:
+      tags: [Customers]
+      summary: Get a customer (permission customers.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Customer
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Customer' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Customers]
+      summary: Update a customer (permission customers.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomerInput' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Customer' } }
+  /customers/{id}/addresses:
+    post:
+      tags: [Customers]
+      summary: Add an address (permission customers.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Address' }
+      responses: { '201': { $ref: '#/components/responses/GenericOk' } }
+  /customers/{id}/addresses/{addressId}:
+    patch:
+      tags: [Customers]
+      summary: Update an address (permission customers.edit)
+      parameters:
+        - { $ref: '#/components/parameters/IdParam' }
+        - { name: addressId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Address' }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+    delete:
+      tags: [Customers]
+      summary: Delete an address (permission customers.edit)
+      parameters:
+        - { $ref: '#/components/parameters/IdParam' }
+        - { name: addressId, in: path, required: true, schema: { type: string } }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /customers/{id}/history:
+    get:
+      tags: [Customers]
+      summary: Timeline across calls/leads/service requests/finance for this customer (permission customers.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /customers/{id}/products:
+    get:
+      tags: [Customers]
+      summary: List a customer's registered products (permission customers.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Products
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { type: array, items: { $ref: '#/components/schemas/CustomerProduct' } } }
+    post:
+      tags: [Customers]
+      summary: Register a product for a customer (permission customers.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [brandId, productTypeId]
+              properties:
+                brandId: { type: string }
+                productTypeId: { type: string }
+                modelNumber: { type: string }
+                serialNumber: { type: string }
+                purchaseDate: { type: string, format: date }
+      responses: { '201': { $ref: '#/components/responses/GenericOk' } }
+  /customers/{id}/consent:
+    patch:
+      tags: [Customers]
+      summary: Update marketing consent for one channel (audited) (permission customers.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, state]
+              properties:
+                channel: { type: string, enum: [whatsapp, email, sms] }
+                state: { type: string, enum: [GRANTED, REVOKED, NOT_ASKED] }
+                reason: { type: string }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+
+  # ─────────────────────────── Catalog ───────────────────────────
+  /services:
+    get:
+      tags: [Catalog]
+      summary: List services (permission catalog.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: active, in: query, schema: { type: boolean } }
+        - { name: categoryId, in: query, schema: { type: string } }
+        - { name: productTypeId, in: query, schema: { type: string } }
+        - { name: pinCode, in: query, schema: { type: string } }
+        - { name: q, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Services
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/Service' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+    post:
+      tags: [Catalog]
+      summary: Create a service (permission catalog.create)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, categoryId]
+              properties:
+                name: { type: string }
+                categoryId: { type: string }
+                subCategoryId: { type: string }
+                applicableBrandIds: { type: array, items: { type: string } }
+                applicableProductTypeIds: { type: array, items: { type: string } }
+                requiredSkills: { type: array, items: { type: string } }
+                expectedDurationMinutes: { type: integer, default: 60 }
+                pricing:
+                  type: object
+                  properties:
+                    basePrice: { type: number }
+                    visitingCharge: { type: number }
+                    inspectionCharge: { type: number }
+                    emergencyCharge: { type: number }
+                taxRateId: { type: string }
+                warrantyPeriodDays: { type: integer, default: 0 }
+                slaMinutes: { type: integer, default: 1440 }
+      responses: { '201': { $ref: '#/components/responses/GenericOk' } }
+  /services/{id}:
+    get:
+      tags: [Catalog]
+      summary: Get a service (permission catalog.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Service
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Service' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Catalog]
+      summary: Update a service (permission catalog.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /services/{id}/coverage:
+    get:
+      tags: [Catalog]
+      summary: Check whether a service is offered at a given pin code (permission catalog.view)
+      parameters:
+        - { $ref: '#/components/parameters/IdParam' }
+        - { name: pinCode, in: query, required: true, schema: { type: string } }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+
+  # ─────────────────────────── Calls ───────────────────────────
+  /calls:
+    get:
+      tags: [Calls]
+      summary: List calls (permission calls.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: callType, in: query, schema: { $ref: '#/components/schemas/CallType' } }
+        - { name: direction, in: query, schema: { type: string, enum: [INCOMING, OUTGOING] } }
+        - { name: customerId, in: query, schema: { type: string } }
+        - { name: createdBy, in: query, schema: { type: string } }
+        - { name: q, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Calls
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/Call' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+    post:
+      tags: [Calls]
+      summary: >
+        Log a call (permission calls.create). `details` is validated against a
+        callType-specific sub-schema (INITIAL/REQUIREMENT/PRE_SERVICE/
+        VISIT_UPDATE/POST_SERVICE_FOLLOWUP/HAPPY_CALL) — see
+        docs/06-complete-workflow-document.md and
+        src/modules/calls/calls.validation.ts for the exact per-type fields.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [callType, direction, callerNumber, callDate, callTime]
+              properties:
+                callType: { $ref: '#/components/schemas/CallType' }
+                direction: { type: string, enum: [INCOMING, OUTGOING] }
+                customerId: { type: string }
+                customerProductId: { type: string }
+                relatedLeadId: { type: string }
+                relatedServiceRequestId: { type: string }
+                callerNumber: { type: string }
+                alternateNumber: { type: string }
+                customerName: { type: string }
+                callDate: { type: string, format: date }
+                callTime: { type: string, example: "14:30" }
+                source: { type: string }
+                priority: { $ref: '#/components/schemas/Priority' }
+                notes: { type: string }
+                attachments: { type: array, items: { type: string } }
+                recordingUrl: { type: string }
+                branchId: { type: string }
+                assignedTo: { type: string }
+                details:
+                  type: object
+                  description: Call-type-specific fields — see summary.
+      responses: { '201': { $ref: '#/components/responses/GenericOk' }, '422': { $ref: '#/components/responses/ValidationError' } }
+  /calls/{id}:
+    get:
+      tags: [Calls]
+      summary: Get a call (permission calls.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Call
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Call' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Calls]
+      summary: Update a call's outcome/notes/assignment/details (permission calls.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                outcome: { type: string }
+                notes: { type: string }
+                assignedTo: { type: string }
+                details: { type: object }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+
+  # ─────────────────────────── Leads ───────────────────────────
+  /leads:
+    get:
+      tags: [Leads]
+      summary: List leads (permission leads.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: stage, in: query, schema: { $ref: '#/components/schemas/LeadStage' } }
+        - { name: ownerId, in: query, schema: { type: string } }
+        - { name: source, in: query, schema: { type: string } }
+        - { name: priority, in: query, schema: { $ref: '#/components/schemas/Priority' } }
+        - { name: q, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Leads
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/Lead' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+    post:
+      tags: [Leads]
+      summary: Create a lead (permission leads.create)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source, ownerId]
+              properties:
+                source: { type: string }
+                priority: { $ref: '#/components/schemas/Priority' }
+                ownerId: { type: string }
+                customerId: { type: string }
+                contactName: { type: string }
+                contactMobile: { type: string }
+                productInterest: { type: string }
+                requirement: { type: string }
+                followUpDate: { type: string, format: date-time }
+                branchId: { type: string }
+                campaignId: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Lead' } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /leads/bulk-assign:
+    post:
+      tags: [Leads]
+      summary: Reassign many leads to a new owner at once (permission leads.edit)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [leadIds, ownerId]
+              properties:
+                leadIds: { type: array, items: { type: string }, minItems: 1 }
+                ownerId: { type: string }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /leads/merge:
+    post:
+      tags: [Leads]
+      summary: Merge a duplicate lead into a primary lead (permission leads.edit)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [primaryLeadId, duplicateLeadId]
+              properties:
+                primaryLeadId: { type: string }
+                duplicateLeadId: { type: string }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /leads/{id}:
+    get:
+      tags: [Leads]
+      summary: Get a lead (permission leads.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Lead
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Lead' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Leads]
+      summary: Update a lead (permission leads.edit — record-owner enforced on top of the role check)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ownerId: { type: string }
+                priority: { $ref: '#/components/schemas/Priority' }
+                productInterest: { type: string }
+                requirement: { type: string }
+                followUpDate: { type: string, format: date-time }
+                score: { type: number }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /leads/{id}/stage:
+    patch:
+      tags: [Leads]
+      summary: Change a lead's stage (permission leads.edit; enforced by the generic status-transition engine)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [toStage]
+              properties:
+                toStage: { $ref: '#/components/schemas/LeadStage' }
+                lostReason: { type: string, description: "Required when toStage is LOST" }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /leads/{id}/notes:
+    post:
+      tags: [Leads]
+      summary: Add a note to a lead (permission leads.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties: { text: { type: string } }
+      responses: { '201': { $ref: '#/components/responses/GenericOk' } }
+  /leads/{id}/convert:
+    post:
+      tags: [Leads]
+      summary: Convert a lead into a Customer, or into a Customer + Service Request (permission leads.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [convertTo]
+              properties:
+                convertTo: { type: string, enum: [CUSTOMER, SERVICE_REQUEST] }
+                customerType: { type: string, enum: [INDIVIDUAL, BUSINESS], default: INDIVIDUAL }
+                name: { type: string }
+                addresses: { type: array, items: { $ref: '#/components/schemas/Address' } }
+                serviceId: { type: string, description: "Required when convertTo=SERVICE_REQUEST" }
+                addressSnapshot: { $ref: '#/components/schemas/Address' }
+                symptoms: { type: array, items: { type: string } }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' }, '422': { $ref: '#/components/responses/ValidationError' } }
+
+  # ─────────────────────────── Service Requests ───────────────────────────
+  /service-requests:
+    get:
+      tags: [ServiceRequests]
+      summary: List service requests (permission serviceRequests.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/ServiceRequestStatus' } }
+        - { name: status_in, in: query, schema: { type: string, description: "comma-separated statuses" } }
+        - { name: branchId, in: query, schema: { type: string } }
+        - { name: assigneeId, in: query, schema: { type: string } }
+        - { name: priority, in: query, schema: { $ref: '#/components/schemas/Priority' } }
+        - { name: customerId, in: query, schema: { type: string } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: sort, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Service requests
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/ServiceRequest' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+    post:
+      tags: [ServiceRequests]
+      summary: Create a service request (permission serviceRequests.create)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customerId, addressSnapshot, serviceId, source]
+              properties:
+                customerId: { type: string }
+                customerProductId: { type: string }
+                addressSnapshot: { $ref: '#/components/schemas/Address' }
+                serviceId: { type: string }
+                symptoms: { type: array, items: { type: string } }
+                notes: { type: string }
+                images: { type: array, items: { type: string } }
+                priority: { $ref: '#/components/schemas/Priority' }
+                source: { type: string, enum: [CUSTOMER_APP, CALL, LEAD_CONVERSION, WALK_IN] }
+                relatedCallId: { type: string }
+                relatedLeadId: { type: string }
+                scheduledDate: { type: string, format: date }
+                scheduledSlot: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/ServiceRequest' } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /service-requests/{id}:
+    get:
+      tags: [ServiceRequests]
+      summary: Get a service request (permission serviceRequests.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Service request
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/ServiceRequest' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /service-requests/{id}/status:
+    patch:
+      tags: [ServiceRequests]
+      summary: Change status (permission serviceRequests.edit; enforced by the 37-status transition engine, working-hours-aware SLA recomputed on assignment)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [toStatus]
+              properties:
+                toStatus: { $ref: '#/components/schemas/ServiceRequestStatus' }
+                reason: { type: string }
+                geo: { type: object, properties: { lat: { type: number }, lng: { type: number } } }
+                idempotencyKey: { type: string }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /service-requests/{id}/assign:
+    post:
+      tags: [ServiceRequests]
+      summary: Assign to a branch/sub-branch/team/employee/vendor/outsourced partner (permission serviceRequests.assign)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assigneeType, assigneeId]
+              properties:
+                assigneeType: { $ref: '#/components/schemas/AssigneeType' }
+                assigneeId: { type: string }
+                method: { type: string, enum: [MANUAL, RULE_ENGINE, BYPASS], default: MANUAL }
+                reason: { type: string }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /service-requests/{id}/reassign:
+    post:
+      tags: [ServiceRequests]
+      summary: Reassign (permission serviceRequests.assign) — same body shape as assign
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assigneeType, assigneeId]
+              properties:
+                assigneeType: { $ref: '#/components/schemas/AssigneeType' }
+                assigneeId: { type: string }
+                method: { type: string, enum: [MANUAL, RULE_ENGINE, BYPASS], default: MANUAL }
+                reason: { type: string }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /service-requests/{id}/assignment-candidates:
+    get:
+      tags: [ServiceRequests]
+      summary: Ranked candidate employees/vendors for assignment, by skill/coverage/workload (permission serviceRequests.assign)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/GenericListOk' } }
+  /service-requests/{id}/assignment-history:
+    get:
+      tags: [ServiceRequests]
+      summary: Full assignment history for this request (permission serviceRequests.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/GenericListOk' } }
+  /service-requests/{id}/cancel:
+    post:
+      tags: [ServiceRequests]
+      summary: Cancel (permission serviceRequests.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties: { reason: { type: string } }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /service-requests/{id}/reopen:
+    post:
+      tags: [ServiceRequests]
+      summary: >
+        Reopen a completed request — creates a new linked request, root-traces
+        reopenCount across the whole chain, checks warranty applicability, and
+        auto-escalates at 3+ reopens (permission serviceRequests.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties: { reason: { type: string } }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /service-requests/{id}/reopen-history:
+    get:
+      tags: [ServiceRequests]
+      summary: Full reopen chain for this request's root (permission serviceRequests.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/GenericListOk' } }
+  /service-requests/{id}/completion-otp/request:
+    post:
+      tags: [ServiceRequests]
+      summary: Generate a completion-proof OTP, sent to the customer (permission serviceRequests.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /service-requests/{id}/completion-otp/verify:
+    post:
+      tags: [ServiceRequests]
+      summary: Verify the completion OTP (permission serviceRequests.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [otp]
+              properties: { otp: { type: string, minLength: 6, maxLength: 6 } }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /service-requests/{id}/location-ping:
+    post:
+      tags: [ServiceRequests]
+      summary: Record a technician location ping (permission serviceRequests.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lat, lng]
+              properties: { lat: { type: number }, lng: { type: number } }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+
+  # ─────────────────────────── Field Execution ───────────────────────────
+  /service-requests/{id}/visits:
+    get:
+      tags: [FieldExecution]
+      summary: List visits for a service request (permission fieldExecution.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Visits
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { type: array, items: { $ref: '#/components/schemas/ServiceVisit' } } }
+  /service-requests/{id}/visits/inspection:
+    patch:
+      tags: [FieldExecution]
+      summary: Record inspection findings on the technician's current open visit (permission fieldExecution.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                defectFound: { type: string }
+                symptoms: { type: array, items: { type: string } }
+                solutionType: { type: string }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /service-requests/{id}/visits/parts:
+    post:
+      tags: [FieldExecution]
+      summary: Add parts used on the current visit (permission fieldExecution.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [parts]
+              properties:
+                parts:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [name, qty, unitPrice]
+                    properties:
+                      partId: { type: string }
+                      name: { type: string }
+                      qty: { type: number }
+                      unitPrice: { type: number }
+      responses: { '201': { $ref: '#/components/responses/GenericOk' } }
+  /service-requests/{id}/visits/work:
+    patch:
+      tags: [FieldExecution]
+      summary: Update work notes / labour charge / before-after images on the current visit (permission fieldExecution.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                labourCharge: { type: number }
+                workNotes: { type: string }
+                beforeImages: { type: array, items: { type: string } }
+                afterImages: { type: array, items: { type: string } }
+                nextVisitDate: { type: string, format: date-time }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /service-requests/{id}/visits/complete:
+    post:
+      tags: [FieldExecution]
+      summary: Complete the current visit with a completion proof (permission fieldExecution.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [completionProof]
+              properties:
+                completionProof:
+                  type: object
+                  required: [type]
+                  properties:
+                    type: { type: string, enum: [OTP, SIGNATURE, APP_CONFIRMATION] }
+                    value: { type: string }
+                    url: { type: string }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /service-requests/{id}/sync-batch:
+    post:
+      tags: [FieldExecution]
+      summary: >
+        Offline-sync batch (permission fieldExecution.edit) — actions processed
+        in client-recorded order, each independently (a bad action is rejected
+        on its own, with current status + allowed transitions attached, not the
+        whole batch); idempotent via a 24h idempotency-key ledger so a retried
+        batch after a dropped connection doesn't double-apply.
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actions]
+              properties:
+                actions:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [idempotencyKey, clientTimestamp, actionType]
+                    properties:
+                      idempotencyKey: { type: string }
+                      clientTimestamp: { type: string, format: date-time }
+                      actionType: { type: string, enum: [START_VISIT, ARRIVE, UPDATE_INSPECTION, ADD_PARTS, UPDATE_WORK, COMPLETE_VISIT, STATUS_CHANGE] }
+                      payload: { type: object }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+
+  # ─────────────────────────── Files ───────────────────────────
+  /files/signed-upload:
+    post:
+      tags: [Files]
+      summary: Get a signed Cloudinary upload URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category, entityType, entityId]
+              properties:
+                category: { $ref: '#/components/schemas/FileCategory' }
+                entityType: { type: string }
+                entityId: { type: string }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /files/confirm:
+    post:
+      tags: [Files]
+      summary: Confirm a completed Cloudinary upload, creating the File record
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category, entityType, entityId, publicId, url, mimeType, sizeBytes]
+              properties:
+                category: { $ref: '#/components/schemas/FileCategory' }
+                entityType: { type: string }
+                entityId: { type: string }
+                publicId: { type: string }
+                url: { type: string }
+                mimeType: { type: string }
+                sizeBytes: { type: integer }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/File' } }
+  /files/upload:
+    post:
+      tags: [Files]
+      summary: Direct multipart upload (local-storage fallback when Cloudinary isn't configured)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, category, entityType, entityId]
+              properties:
+                file: { type: string, format: binary }
+                category: { $ref: '#/components/schemas/FileCategory' }
+                entityType: { type: string }
+                entityId: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/File' } }
+  /files/{id}:
+    get:
+      tags: [Files]
+      summary: Get file metadata
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: File
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/File' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Files]
+      summary: Soft-delete a file (sets deletedAt)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+
+  # ─────────────────────────── Finance ───────────────────────────
+  /estimates:
+    get:
+      tags: [Finance]
+      summary: List estimates (permission finance.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/EstimateStatus' } }
+        - { name: customerId, in: query, schema: { type: string } }
+        - { name: serviceRequestId, in: query, schema: { type: string } }
+      responses: { '200': { $ref: '#/components/responses/GenericListOk' } }
+    post:
+      tags: [Finance]
+      summary: Create an estimate (permission finance.create; server computes GST split from branch vs customer state)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FinancialDocumentInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Estimate' } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /estimates/{id}:
+    get:
+      tags: [Finance]
+      summary: Get an estimate (permission finance.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Estimate
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Estimate' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /estimates/{id}/share:
+    post:
+      tags: [Finance]
+      summary: Share an estimate with the customer over one or more channels (permission finance.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channels]
+              properties:
+                channels: { type: array, minItems: 1, items: { type: string, enum: [EMAIL, WHATSAPP, IN_APP] } }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /estimates/{id}/approve:
+    patch:
+      tags: [Finance]
+      summary: Customer approves the estimate (permission finance.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /estimates/{id}/reject:
+    patch:
+      tags: [Finance]
+      summary: Customer rejects the estimate (permission finance.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /estimates/{id}/convert:
+    post:
+      tags: [Finance]
+      summary: Convert an approved estimate into a Proforma Invoice, carrying items/totals forward verbatim (permission finance.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/GenericOk' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /proforma-invoices:
+    get:
+      tags: [Finance]
+      summary: List proforma invoices (permission finance.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/ProformaInvoiceStatus' } }
+        - { name: customerId, in: query, schema: { type: string } }
+        - { name: serviceRequestId, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Proforma invoices
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/ProformaInvoice' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+  /proforma-invoices/{id}:
+    get:
+      tags: [Finance]
+      summary: Get a proforma invoice (permission finance.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Proforma invoice
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/ProformaInvoice' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /proforma-invoices/{id}/share:
+    post:
+      tags: [Finance]
+      summary: Share a proforma invoice with the customer (permission finance.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channels]
+              properties:
+                channels: { type: array, minItems: 1, items: { type: string, enum: [EMAIL, WHATSAPP, IN_APP] } }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /proforma-invoices/{id}/accept:
+    patch:
+      tags: [Finance]
+      summary: Customer accepts the proforma invoice (permission finance.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /proforma-invoices/{id}/convert:
+    post:
+      tags: [Finance]
+      summary: Convert an accepted proforma invoice into an Invoice (permission finance.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/GenericOk' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /invoices:
+    get:
+      tags: [Finance]
+      summary: List invoices (permission finance.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/InvoiceStatus' } }
+        - { name: customerId, in: query, schema: { type: string } }
+        - { name: serviceRequestId, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Invoices
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/Invoice' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+    post:
+      tags: [Finance]
+      summary: Create a direct invoice, not converted from an estimate/proforma (permission finance.create)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FinancialDocumentInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Invoice' } }
+  /invoices/{id}:
+    get:
+      tags: [Finance]
+      summary: Get an invoice (permission finance.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Invoice
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Invoice' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /invoices/{id}/share:
+    post:
+      tags: [Finance]
+      summary: Share an invoice with the customer (permission finance.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channels]
+              properties:
+                channels: { type: array, minItems: 1, items: { type: string, enum: [EMAIL, WHATSAPP, IN_APP] } }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /invoices/{id}/cancel:
+    post:
+      tags: [Finance]
+      summary: Cancel an invoice — blocked once any payment exists; use a Credit/Debit Note instead (permission finance.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties: { reason: { type: string } }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /invoices/{id}/payments:
+    post:
+      tags: [Finance]
+      summary: Record a payment against an invoice — status (PARTIALLY_PAID/PAID) is derived from the sum of receipts (permission finance.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, method]
+              properties:
+                amount: { type: number }
+                method: { $ref: '#/components/schemas/PaymentMethod' }
+                reference: { type: string }
+                proofUrl: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/PaymentReceipt' } }
+    get:
+      tags: [Finance]
+      summary: List payments recorded against an invoice (permission finance.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Payments
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { type: array, items: { $ref: '#/components/schemas/PaymentReceipt' } } }
+  /payment-receipts/{id}:
+    get:
+      tags: [Finance]
+      summary: Get a payment receipt (permission finance.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Payment receipt
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/PaymentReceipt' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /credit-notes:
+    post:
+      tags: [Finance]
+      summary: Issue a credit note against an already-issued invoice (permission finance.edit)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invoiceId, amount, reason]
+              properties:
+                invoiceId: { type: string }
+                amount: { type: number }
+                reason: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/CreditDebitNote' } }
+  /debit-notes:
+    post:
+      tags: [Finance]
+      summary: Issue a debit note against an already-issued invoice (permission finance.edit)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invoiceId, amount, reason]
+              properties:
+                invoiceId: { type: string }
+                amount: { type: number }
+                reason: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/CreditDebitNote' } }
+
+  # ─────────────────────────── Vendor Finance ───────────────────────────
+  /vendor-invoices:
+    get:
+      tags: [VendorFinance]
+      summary: List vendor invoices (permission vendors.viewFinancial)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: vendorId, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/VendorInvoiceStatus' } }
+      responses:
+        '200':
+          description: Vendor invoices
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/VendorInvoice' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+    post:
+      tags: [VendorFinance]
+      summary: Create a vendor invoice from a set of completed service requests (permission vendors.viewFinancial)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vendorId, serviceRequestIds, grossAmount]
+              properties:
+                vendorId: { type: string }
+                serviceRequestIds: { type: array, minItems: 1, items: { type: string } }
+                grossAmount: { type: number }
+                periodStart: { type: string, format: date }
+                periodEnd: { type: string, format: date }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/VendorInvoice' } }
+  /vendor-invoices/{id}/approve:
+    patch:
+      tags: [VendorFinance]
+      summary: Approve a vendor invoice (permission vendors.viewFinancial)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /vendor-payouts:
+    get:
+      tags: [VendorFinance]
+      summary: List vendor payouts (permission vendors.viewFinancial)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: vendorId, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/VendorPayoutStatus' } }
+      responses:
+        '200':
+          description: Vendor payouts
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/VendorPayout' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+    post:
+      tags: [VendorFinance]
+      summary: Create a payout batching one or more approved vendor invoices (permission vendors.viewFinancial)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vendorId, vendorInvoiceIds]
+              properties:
+                vendorId: { type: string }
+                vendorInvoiceIds: { type: array, minItems: 1, items: { type: string } }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/VendorPayout' } }
+  /vendor-payouts/{id}/mark-paid:
+    patch:
+      tags: [VendorFinance]
+      summary: Mark a payout as paid (permission vendors.viewFinancial)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reference]
+              properties: { reference: { type: string } }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+
+  # ─────────────────────────── Happy Calls ───────────────────────────
+  /happy-calls:
+    get:
+      tags: [HappyCalls]
+      summary: List happy calls (permission happyCalls.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/HappyCallStatus' } }
+        - { name: assignedTo, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Happy calls
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/HappyCall' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+  /happy-calls/{id}:
+    get:
+      tags: [HappyCalls]
+      summary: Get a happy call (permission happyCalls.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Happy call
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/HappyCall' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /happy-calls/{id}/outcome:
+    patch:
+      tags: [HappyCalls]
+      summary: >
+        Record the outcome (permission happyCalls.edit). COMPLETED closes the
+        linked Service Request; UNREACHABLE retries up to 2 times before
+        closing anyway.
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/HappyCallStatus' }
+                outcome: { type: string }
+                customerSatisfaction: { type: integer, minimum: 1, maximum: 5 }
+                remarks: { type: string }
+                reopenRequested: { type: boolean, default: false }
+                escalationRequired: { type: boolean, default: false }
+                nextFollowUpDate: { type: string, format: date-time }
+                recordingUrl: { type: string }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /happy-calls/{id}/reassign:
+    patch:
+      tags: [HappyCalls]
+      summary: Reassign a happy call to a different performer (permission happyCalls.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assignedTo]
+              properties: { assignedTo: { type: string } }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+
+  # ─────────────────────────── Notifications ───────────────────────────
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: List my notifications (self-scoped, no permission check)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: channel, in: query, schema: { $ref: '#/components/schemas/NotificationChannel' } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/NotificationStatus' } }
+        - { name: unreadOnly, in: query, schema: { type: boolean } }
+      responses:
+        '200':
+          description: Notifications
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/Notification' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+  /notifications/unread-count:
+    get:
+      tags: [Notifications]
+      summary: My unread notification count (self-scoped)
+      responses:
+        '200':
+          description: Count
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { type: object, properties: { count: { type: integer } } } }
+  /notifications/{id}/read:
+    patch:
+      tags: [Notifications]
+      summary: Mark one of my notifications as read (self-scoped)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+  /notification-templates:
+    get:
+      tags: [Notifications]
+      summary: List notification templates (permission config.manageSettings)
+      parameters:
+        - { name: triggerKey, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Templates
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { type: array, items: { $ref: '#/components/schemas/NotificationTemplate' } } }
+  /notification-templates/{id}:
+    patch:
+      tags: [Notifications]
+      summary: Update a notification template's copy (permission config.manageSettings)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                subjectTemplate: { type: string }
+                bodyTemplate: { type: string }
+                active: { type: boolean }
+      responses: { '200': { $ref: '#/components/responses/GenericOk' } }
+
+  # ─────────────────────────── Marketing ───────────────────────────
+  /campaigns:
+    get:
+      tags: [Marketing]
+      summary: List campaigns (permission marketing.view)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/CampaignStatus' } }
+        - { name: channel, in: query, schema: { type: string, enum: [WHATSAPP, EMAIL] } }
+      responses:
+        '200':
+          description: Campaigns
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/Campaign' } }
+                      meta: { $ref: '#/components/schemas/PaginationMeta' }
+    post:
+      tags: [Marketing]
+      summary: Create a campaign (permission marketing.create)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, channel, templateId, audienceFilter]
+              properties:
+                name: { type: string }
+                channel: { type: string, enum: [WHATSAPP, EMAIL] }
+                templateId: { type: string, description: "Must reference a NotificationTemplate on the same channel" }
+                audienceFilter:
+                  type: object
+                  properties:
+                    tags: { type: array, items: { type: string } }
+                    segments: { type: array, items: { type: string } }
+                    customerType: { type: string, enum: [INDIVIDUAL, BUSINESS] }
+                scheduledAt: { type: string, format: date-time }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Campaign' } }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /campaigns/{id}:
+    get:
+      tags: [Marketing]
+      summary: Get a campaign (permission marketing.view)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses:
+        '200':
+          description: Campaign
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Campaign' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /campaigns/{id}/send:
+    post:
+      tags: [Marketing]
+      summary: >
+        Send now — resolves the audience via tags/segments/customerType AND
+        per-channel marketing consent = GRANTED, sends individually, tracks
+        stats.{sent,failed} (permission marketing.edit)
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { $ref: '#/components/responses/GenericOk' }, '409': { $ref: '#/components/responses/Conflict' } }
+
+  # ─────────────────────────── AI ───────────────────────────
+  /ai/settings:
+    get:
+      tags: [AI]
+      summary: Get the global AI settings (permission ai.manageSettings)
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/AiSettings' } }
+    patch:
+      tags: [AI]
+      summary: Update AI settings — provider/model, per-feature flags, usage caps (permission ai.manageSettings)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                provider: { type: string, enum: [GEMINI, OPENAI] }
+                model: { type: string }
+                enabled: { type: boolean }
+                featureFlags:
+                  type: object
+                  properties:
+                    CALL_SUMMARIZATION: { type: boolean }
+                    COMPLAINT_CLASSIFICATION: { type: boolean }
+                usageLimits:
+                  type: object
+                  properties:
+                    maxRequestsPerDay: { type: integer }
+                    maxTokensPerDay: { type: integer }
+                    perRoleMaxRequestsPerDay: { type: object, additionalProperties: { type: integer } }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/AiSettings' } }
+  /ai/summarize-call:
+    post:
+      tags: [AI]
+      summary: >
+        Summarize a call's notes (permission ai.create). Always returns 200
+        with { aiAvailable, reason? , text? } — never blocks the caller's
+        workflow, even when AI is disabled/over-cap/unconfigured.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Provide either callId or text"
+              properties:
+                callId: { type: string }
+                text: { type: string, maxLength: 10000 }
+      responses:
+        '200':
+          description: Result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/AiFeatureResult' } }
+  /ai/classify-complaint:
+    post:
+      tags: [AI]
+      summary: >
+        Classify complaint text into one of the given (or, if omitted, the
+        active SERVICE_CATEGORY masters') categories (permission ai.create).
+        Same never-blocks response shape as /ai/summarize-call.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 1, maxLength: 10000 }
+                categories: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: Result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/AiFeatureResult' } }
+
+  # ─────────────────────────── Reports ───────────────────────────
+  /reports/{reportKey}:
+    get:
+      tags: [Reports]
+      summary: >
+        Run a report (permission reports.view). Every report is a live Mongo
+        aggregation (not pre-aggregated) — see reportKey enum for the six
+        available reports. A BRANCH-scoped caller is pinned to their own
+        branch regardless of the branchId query param.
+      parameters:
+        - name: reportKey
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/ReportKey' }
+        - { name: branchId, in: query, schema: { type: string } }
+        - { name: dateFrom, in: query, schema: { type: string, format: date-time } }
+        - { name: dateTo, in: query, schema: { type: string, format: date-time } }
+      responses:
+        '200':
+          description: Report result — shape depends on reportKey (see docs/manish/16 Phase 10 notes)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { type: object, description: "Report-specific shape" } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  # ─────────────────────────── Import / Export ───────────────────────────
+  /export/{entity}:
+    get:
+      tags: [ImportExport]
+      summary: >
+        Export an entity as CSV or XLSX (permission {entity}.export, dynamically
+        resolved — see src/modules/import-export/dynamicPermission.ts). Capped
+        at 20,000 rows synchronously; narrower filters are required above that.
+        Registered entities: customers, leads, serviceRequests, calls, invoices.
+      parameters:
+        - name: entity
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/ExportEntity' }
+        - { name: format, in: query, schema: { type: string, enum: [csv, xlsx], default: csv } }
+        - { name: columns, in: query, schema: { type: string, description: "comma-separated, must be a subset of that entity's default column list" } }
+      responses:
+        '200':
+          description: File download (text/csv or application/vnd.openxmlformats-officedocument.spreadsheetml.sheet), Content-Disposition attachment
+          content:
+            text/csv: { schema: { type: string, format: binary } }
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet: { schema: { type: string, format: binary } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /import/{entity}:
+    post:
+      tags: [ImportExport]
+      summary: >
+        Import an entity from a CSV file (permission {entity}.import, dynamically
+        resolved). XLSX is intentionally not accepted for import — the `xlsx`
+        (SheetJS) package's parsing path has two unpatched high-severity
+        advisories (prototype pollution, ReDoS) with no fix on the npm
+        registry, and import parses arbitrary user-uploaded files, so it never
+        calls into that code path (hand-rolled CSV parsing instead, no
+        third-party dependency). Export still writes .xlsx via XLSX.write,
+        since that path only ever serializes trusted internal data. Revisit
+        before a real deployment (Phase 11 security review) or if SheetJS
+        ships a patched release. Registered entities: customers, leads.
+      parameters:
+        - name: entity
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/ImportEntity' }
+        - { name: dryRun, in: query, schema: { type: boolean, default: false } }
+        - { name: mode, in: query, schema: { type: string, enum: [partial, strict], default: partial } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary, description: ".csv only — .xlsx is rejected with a 422" }
+      responses:
+        '200':
+          description: Import result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseBase'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/ImportResult' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token from POST /auth/login, /auth/refresh, or /auth/otp/verify.
+
+  parameters:
+    IdParam:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    PageParam:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    LimitParam:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  responses:
+    Ok:
+      description: Success (no meaningful data payload)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponseBase' }
+    GenericOk:
+      description: Success
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseBase'
+              - type: object
+                properties: { data: { type: object } }
+    GenericListOk:
+      description: Success (list)
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseBase'
+              - type: object
+                properties:
+                  data: { type: array, items: { type: object } }
+                  meta: { $ref: '#/components/schemas/PaginationMeta' }
+    UserOk:
+      description: User
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseBase'
+              - type: object
+                properties: { data: { $ref: '#/components/schemas/User' } }
+    UserListOk:
+      description: Users
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseBase'
+              - type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/User' } }
+                  meta: { $ref: '#/components/schemas/PaginationMeta' }
+    Unauthorized:
+      description: Missing/invalid/expired access token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponseBase' }
+    Forbidden:
+      description: Authenticated but lacks the required module.action permission
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponseBase' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponseBase' }
+    Conflict:
+      description: Business-rule conflict (e.g. invalid status transition, already-sent campaign)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponseBase' }
+    ValidationError:
+      description: Request body/query/params failed schema validation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponseBase' }
+
+  schemas:
+    # ── Envelope ──
+    ApiResponseBase:
+      type: object
+      required: [success, message, data, meta, errors]
+      properties:
+        success: { type: boolean }
+        message: { type: string }
+        data: {}
+        meta: { $ref: '#/components/schemas/PaginationMeta' }
+        errors:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              code: { type: string }
+              message: { type: string }
+    PaginationMeta:
+      type: object
+      nullable: true
+      properties:
+        page: { type: integer }
+        limit: { type: integer }
+        total: { type: integer }
+        totalPages: { type: integer }
+    AuthTokens:
+      type: object
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        user:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            role: { $ref: '#/components/schemas/Role' }
+    Session:
+      type: object
+      properties:
+        id: { type: string }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        current: { type: boolean }
+
+    # ── Shared enums ──
+    Role:
+      type: string
+      enum: [SUPER_ADMIN, ADMIN, OPERATIONS_ADMIN, BRANCH_ADMIN, SUB_BRANCH_ADMIN, BRANCH_MANAGER, TEAM_LEAD, EMPLOYEE, TECHNICIAN, CALL_EXECUTIVE, CUSTOMER_SUPPORT_EXECUTIVE, HAPPY_CALL_EXECUTIVE, SALES_EXECUTIVE, MARKETING_EXECUTIVE, FINANCE_EXECUTIVE, ACCOUNTANT, VENDOR_OWNER, VENDOR_MANAGER, VENDOR_TECHNICIAN, OUTSOURCED_PARTNER, CUSTOMER, BUSINESS_CUSTOMER]
+    Priority:
+      type: string
+      enum: [LOW, NORMAL, HIGH, URGENT]
+    MasterType:
+      type: string
+      enum: [SERVICE_CATEGORY, BRAND, PRODUCT_TYPE, SYMPTOM, DEFECT, SOLUTION, PART, UNIT, TAX_RATE, PRIORITY, LEAD_SOURCE, CALL_TYPE, APPOINTMENT_SLOT, PAYMENT_METHOD]
+    CallType:
+      type: string
+      enum: [INITIAL, REQUIREMENT, PRE_SERVICE, VISIT_UPDATE, POST_SERVICE_FOLLOWUP, HAPPY_CALL]
+    LeadStage:
+      type: string
+      enum: [NEW, CONTACT_ATTEMPTED, CONNECTED, REQUIREMENT_COLLECTED, QUALIFIED, ESTIMATE_REQUIRED, ESTIMATE_SHARED, NEGOTIATION, FOLLOW_UP, CONVERTED, LOST, NOT_INTERESTED, INVALID, DUPLICATE]
+    ServiceRequestStatus:
+      type: string
+      enum: [NEW, NEEDS_MANUAL_BRANCH_ASSIGNMENT, ASSIGNED_TO_BRANCH, ASSIGNED_TO_SUB_BRANCH, ASSIGNED_TO_TEAM, ASSIGNED_TO_EMPLOYEE, ASSIGNED_TO_VENDOR, OUTSOURCED, REASSIGNMENT_REQUIRED, ACCEPTED, APPOINTMENT_SCHEDULED, RESCHEDULED, CUSTOMER_UNAVAILABLE, TECHNICIAN_EN_ROUTE, TECHNICIAN_ARRIVED, INSPECTION_STARTED, INSPECTION_COMPLETED, ESTIMATE_PENDING, ESTIMATE_SHARED, AWAITING_CUSTOMER_APPROVAL, ESTIMATE_APPROVED, ESTIMATE_REJECTED, PARTS_PENDING, WORK_STARTED, WORK_IN_PROGRESS, ON_HOLD, SERVICE_COMPLETED, CUSTOMER_CONFIRMATION_PENDING, PAYMENT_PENDING, PARTIALLY_PAID, PAID, FOLLOW_UP_PENDING, HAPPY_CALL_PENDING, CLOSED, REOPENED, CANCELLED]
+    AssigneeType:
+      type: string
+      enum: [BRANCH, SUB_BRANCH, TEAM, EMPLOYEE, VENDOR, OUTSOURCED_PARTNER]
+    EstimateStatus:
+      type: string
+      enum: [DRAFT, SHARED, APPROVED, REJECTED, EXPIRED, CONVERTED]
+    ProformaInvoiceStatus:
+      type: string
+      enum: [DRAFT, SHARED, ACCEPTED, CONVERTED, CANCELLED]
+    InvoiceStatus:
+      type: string
+      enum: [DRAFT, ISSUED, PARTIALLY_PAID, PAID, CANCELLED]
+    PaymentMethod:
+      type: string
+      enum: [CASH, UPI, CARD, BANK_TRANSFER, GATEWAY, CHEQUE, CREDIT]
+    VendorInvoiceStatus:
+      type: string
+      enum: [PENDING, APPROVED, PAID, DISPUTED]
+    VendorPayoutStatus:
+      type: string
+      enum: [PENDING, PROCESSING, PAID, FAILED]
+    HappyCallStatus:
+      type: string
+      enum: [PENDING, COMPLETED, UNREACHABLE, RESCHEDULED]
+    NotificationChannel:
+      type: string
+      enum: [IN_APP, PUSH, EMAIL, WHATSAPP, SMS]
+    NotificationStatus:
+      type: string
+      enum: [PENDING, SENT, DELIVERED, READ, FAILED, SKIPPED_INTEGRATION_DISABLED]
+    CampaignStatus:
+      type: string
+      enum: [DRAFT, SCHEDULED, SENDING, COMPLETED, CANCELLED]
+    FileCategory:
+      type: string
+      enum: [ISSUE_IMAGE, PRODUCT_IMAGE, BEFORE_SERVICE_IMAGE, AFTER_SERVICE_IMAGE, PART_IMAGE, VENDOR_DOCUMENT, EMPLOYEE_DOCUMENT, INVOICE_ATTACHMENT, RECORDING, VIDEO, SIGNATURE, PROFILE_IMAGE]
+    ReportKey:
+      type: string
+      enum: [service-request-summary, branch-performance, lead-funnel, revenue-summary, technician-performance, campaign-performance]
+    ExportEntity:
+      type: string
+      enum: [customers, leads, serviceRequests, calls, invoices]
+    ImportEntity:
+      type: string
+      enum: [customers, leads]
+
+    # ── Shared sub-objects ──
+    Address:
+      type: object
+      required: [line1, city, state, pinCode]
+      properties:
+        label: { type: string }
+        line1: { type: string }
+        line2: { type: string }
+        landmark: { type: string }
+        city: { type: string }
+        state: { type: string }
+        pinCode: { type: string }
+        country: { type: string, default: India }
+        isDefault: { type: boolean }
+        geo: { type: object, properties: { lat: { type: number }, lng: { type: number } } }
+    Contact:
+      type: object
+      required: [mobile]
+      properties:
+        name: { type: string }
+        mobile: { type: string }
+        isPrimary: { type: boolean }
+    LineItem:
+      type: object
+      properties:
+        description: { type: string }
+        partId: { type: string }
+        qty: { type: number }
+        unitPrice: { type: number }
+        taxRateId: { type: string }
+        lineTotal: { type: number }
+    TaxBreakup:
+      type: object
+      properties:
+        cgst: { type: number }
+        sgst: { type: number }
+        igst: { type: number }
+    FinancialDocumentInput:
+      type: object
+      required: [customerId, branchId, items]
+      properties:
+        customerId: { type: string }
+        branchId: { type: string }
+        serviceRequestId: { type: string }
+        leadId: { type: string }
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [description, qty, unitPrice]
+            properties:
+              description: { type: string }
+              partId: { type: string }
+              qty: { type: number }
+              unitPrice: { type: number }
+              taxRateId: { type: string }
+        discount: { type: number, default: 0 }
+        validUntil: { type: string, format: date-time, description: "Estimate only" }
+
+    # ── Entities ──
+    User:
+      type: object
+      properties:
+        _id: { type: string }
+        name: { type: string }
+        email: { type: string }
+        mobile: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        status: { type: string, enum: [ACTIVE, INACTIVE] }
+        branchId: { type: string }
+        subBranchId: { type: string }
+        teamId: { type: string }
+        vendorId: { type: string }
+        lastLoginAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Branch:
+      type: object
+      properties:
+        _id: { type: string }
+        name: { type: string }
+        code: { type: string }
+        coverage:
+          type: object
+          properties:
+            pinCodes: { type: array, items: { type: string } }
+            cities: { type: array, items: { type: string } }
+            states: { type: array, items: { type: string } }
+        serviceCategoryIds: { type: array, items: { type: string } }
+        workingHours:
+          type: array
+          items:
+            type: object
+            properties: { day: { type: integer }, openTime: { type: string }, closeTime: { type: string }, closed: { type: boolean } }
+        holidays: { type: array, items: { type: string, format: date } }
+        managerId: { type: string }
+        active: { type: boolean }
+        registeredAddress:
+          type: object
+          properties: { line1: { type: string }, city: { type: string }, state: { type: string }, pinCode: { type: string } }
+        gstin: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    BranchInput:
+      type: object
+      required: [name, code]
+      properties:
+        name: { type: string }
+        code: { type: string }
+        coverage:
+          type: object
+          properties:
+            pinCodes: { type: array, items: { type: string } }
+            cities: { type: array, items: { type: string } }
+            states: { type: array, items: { type: string } }
+        serviceCategoryIds: { type: array, items: { type: string } }
+        workingHours:
+          type: array
+          items:
+            type: object
+            properties: { day: { type: integer, minimum: 0, maximum: 6 }, openTime: { type: string }, closeTime: { type: string }, closed: { type: boolean } }
+        managerId: { type: string }
+    Master:
+      type: object
+      properties:
+        _id: { type: string }
+        masterType: { $ref: '#/components/schemas/MasterType' }
+        key: { type: string }
+        label: { type: string }
+        parentId: { type: string }
+        meta: { type: object }
+        sortOrder: { type: integer }
+        active: { type: boolean }
+    Employee:
+      type: object
+      properties:
+        _id: { type: string }
+        userId: { type: string }
+        branchId: { type: string }
+        subBranchId: { type: string }
+        teamId: { type: string }
+        skills: { type: array, items: { type: string } }
+        certifications: { type: array, items: { type: string } }
+        dailyCapacity: { type: integer }
+        active: { type: boolean }
+    Vendor:
+      type: object
+      properties:
+        _id: { type: string }
+        companyName: { type: string }
+        contactPersons:
+          type: array
+          items:
+            type: object
+            properties: { name: { type: string }, mobile: { type: string }, role: { type: string } }
+        serviceAreas: { type: object, properties: { pinCodes: { type: array, items: { type: string } } } }
+        servicesOffered: { type: array, items: { type: string } }
+        brandsHandled: { type: array, items: { type: string } }
+        productTypesHandled: { type: array, items: { type: string } }
+        skills: { type: array, items: { type: string } }
+        gst: { type: string }
+        pan: { type: string }
+        commissionModel: { type: string, enum: [FIXED, SERVICE_WISE] }
+        commissionRate: { type: number }
+        active: { type: boolean }
+        blacklisted: { type: boolean }
+        blacklistReason: { type: string }
+    Customer:
+      type: object
+      properties:
+        _id: { type: string }
+        userId: { type: string }
+        customerType: { type: string, enum: [INDIVIDUAL, BUSINESS] }
+        name: { type: string }
+        businessName: { type: string }
+        gstin: { type: string }
+        email: { type: string }
+        contacts: { type: array, items: { $ref: '#/components/schemas/Contact' } }
+        addresses: { type: array, items: { $ref: '#/components/schemas/Address' } }
+        tags: { type: array, items: { type: string } }
+        segments: { type: array, items: { type: string } }
+        consent:
+          type: object
+          properties:
+            whatsapp: { type: string, enum: [GRANTED, REVOKED, NOT_ASKED] }
+            email: { type: string, enum: [GRANTED, REVOKED, NOT_ASKED] }
+            sms: { type: string, enum: [GRANTED, REVOKED, NOT_ASKED] }
+        blacklisted: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CustomerInput:
+      type: object
+      required: [name, contacts]
+      properties:
+        customerType: { type: string, enum: [INDIVIDUAL, BUSINESS], default: INDIVIDUAL }
+        name: { type: string, minLength: 2 }
+        businessName: { type: string }
+        gstin: { type: string }
+        email: { type: string, format: email }
+        contacts: { type: array, minItems: 1, items: { $ref: '#/components/schemas/Contact' } }
+        addresses: { type: array, items: { $ref: '#/components/schemas/Address' } }
+        tags: { type: array, items: { type: string } }
+    CustomerProduct:
+      type: object
+      properties:
+        _id: { type: string }
+        customerId: { type: string }
+        brandId: { type: string }
+        productTypeId: { type: string }
+        modelNumber: { type: string }
+        serialNumber: { type: string }
+        purchaseDate: { type: string, format: date }
+        warrantyExpiresAt: { type: string, format: date-time }
+        notes: { type: string }
+    Service:
+      type: object
+      properties:
+        _id: { type: string }
+        name: { type: string }
+        categoryId: { type: string }
+        subCategoryId: { type: string }
+        applicableBrandIds: { type: array, items: { type: string } }
+        applicableProductTypeIds: { type: array, items: { type: string } }
+        requiredSkills: { type: array, items: { type: string } }
+        expectedDurationMinutes: { type: integer }
+        pricing:
+          type: object
+          properties:
+            basePrice: { type: number }
+            visitingCharge: { type: number }
+            inspectionCharge: { type: number }
+            emergencyCharge: { type: number }
+        taxRateId: { type: string }
+        warrantyPeriodDays: { type: integer }
+        slaMinutes: { type: integer }
+        active: { type: boolean }
+    Call:
+      type: object
+      properties:
+        _id: { type: string }
+        number: { type: string }
+        callType: { $ref: '#/components/schemas/CallType' }
+        direction: { type: string, enum: [INCOMING, OUTGOING] }
+        customerId: { type: string }
+        customerProductId: { type: string }
+        relatedLeadId: { type: string }
+        relatedServiceRequestId: { type: string }
+        callerNumber: { type: string }
+        alternateNumber: { type: string }
+        customerName: { type: string }
+        callDate: { type: string, format: date }
+        callTime: { type: string }
+        source: { type: string }
+        priority: { $ref: '#/components/schemas/Priority' }
+        notes: { type: string }
+        attachments: { type: array, items: { type: string } }
+        recordingUrl: { type: string }
+        outcome: { type: string }
+        branchId: { type: string }
+        createdBy: { type: string }
+        assignedTo: { type: string }
+        details: { type: object, description: "Shape depends on callType — see POST /calls" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Lead:
+      type: object
+      properties:
+        _id: { type: string }
+        number: { type: string }
+        stage: { $ref: '#/components/schemas/LeadStage' }
+        source: { type: string }
+        priority: { $ref: '#/components/schemas/Priority' }
+        score: { type: number }
+        ownerId: { type: string }
+        customerId: { type: string }
+        contactName: { type: string }
+        contactMobile: { type: string }
+        productInterest: { type: string }
+        requirement: { type: string }
+        followUpDate: { type: string, format: date-time }
+        notes:
+          type: array
+          items:
+            type: object
+            properties: { text: { type: string }, authorId: { type: string }, createdAt: { type: string, format: date-time } }
+        attachments: { type: array, items: { type: string } }
+        lostReason: { type: string }
+        duplicateOfLeadId: { type: string }
+        convertedToCustomerId: { type: string }
+        convertedToServiceRequestId: { type: string }
+        campaignId: { type: string }
+        branchId: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ServiceRequest:
+      type: object
+      properties:
+        _id: { type: string }
+        number: { type: string }
+        customerId: { type: string }
+        customerProductId: { type: string }
+        addressSnapshot: { $ref: '#/components/schemas/Address' }
+        serviceId: { type: string }
+        branchId: { type: string }
+        subBranchId: { type: string }
+        assigneeType: { $ref: '#/components/schemas/AssigneeType' }
+        assigneeId: { type: string }
+        status: { $ref: '#/components/schemas/ServiceRequestStatus' }
+        isEscalated: { type: boolean }
+        escalationReason: { type: string }
+        priority: { $ref: '#/components/schemas/Priority' }
+        source: { type: string }
+        relatedCallId: { type: string }
+        relatedLeadId: { type: string }
+        symptoms: { type: array, items: { type: string } }
+        notes: { type: string }
+        images: { type: array, items: { type: string } }
+        scheduledDate: { type: string, format: date }
+        scheduledSlot: { type: string }
+        isReopen: { type: boolean }
+        originalServiceRequestId: { type: string }
+        sla:
+          type: object
+          properties: { dueAt: { type: string, format: date-time }, breachedAt: { type: string, format: date-time } }
+        createdBy: { type: string }
+        completedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time }
+        cancelledAt: { type: string, format: date-time }
+        cancelReason: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ServiceVisit:
+      type: object
+      properties:
+        _id: { type: string }
+        serviceRequestId: { type: string }
+        visitNumber: { type: integer }
+        technicianId: { type: string }
+        startedAt: { type: string, format: date-time }
+        arrivedAt: { type: string, format: date-time }
+        inspection:
+          type: object
+          properties:
+            defectFound: { type: string }
+            symptoms: { type: array, items: { type: string } }
+            solutionType: { type: string }
+        parts:
+          type: array
+          items:
+            type: object
+            properties: { partId: { type: string }, name: { type: string }, qty: { type: number }, unitPrice: { type: number } }
+        labourCharge: { type: number }
+        beforeImages: { type: array, items: { type: string } }
+        afterImages: { type: array, items: { type: string } }
+        workNotes: { type: string }
+        completedAt: { type: string, format: date-time }
+        completionProof:
+          type: object
+          properties:
+            type: { type: string, enum: [OTP, SIGNATURE, APP_CONFIRMATION] }
+            value: { type: string }
+            url: { type: string }
+        nextVisitDate: { type: string, format: date-time }
+    File:
+      type: object
+      properties:
+        _id: { type: string }
+        category: { $ref: '#/components/schemas/FileCategory' }
+        entityType: { type: string }
+        entityId: { type: string }
+        provider: { type: string, enum: [CLOUDINARY, LOCAL] }
+        url: { type: string }
+        mimeType: { type: string }
+        sizeBytes: { type: integer }
+        uploadedBy: { type: string }
+        deletedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+    Estimate:
+      allOf:
+        - $ref: '#/components/schemas/FinancialDocumentBase'
+        - type: object
+          properties: { status: { $ref: '#/components/schemas/EstimateStatus' }, validUntil: { type: string, format: date-time } }
+    ProformaInvoice:
+      allOf:
+        - $ref: '#/components/schemas/FinancialDocumentBase'
+        - type: object
+          properties: { status: { $ref: '#/components/schemas/ProformaInvoiceStatus' } }
+    Invoice:
+      allOf:
+        - $ref: '#/components/schemas/FinancialDocumentBase'
+        - type: object
+          properties:
+            status: { $ref: '#/components/schemas/InvoiceStatus' }
+            amountPaid: { type: number }
+            proformaInvoiceId: { type: string }
+    FinancialDocumentBase:
+      type: object
+      properties:
+        _id: { type: string }
+        number: { type: string }
+        serviceRequestId: { type: string }
+        leadId: { type: string }
+        customerId: { type: string }
+        branchId: { type: string }
+        financialYear: { type: string }
+        items: { type: array, items: { $ref: '#/components/schemas/LineItem' } }
+        subtotal: { type: number }
+        taxBreakup: { $ref: '#/components/schemas/TaxBreakup' }
+        discount: { type: number }
+        roundOff: { type: number }
+        total: { type: number }
+        pdfUrl: { type: string, description: "Placeholder stub path — real PDF rendering not yet wired (no Puppeteer in this environment)" }
+        sentVia: { type: array, items: { type: string } }
+        cancelledAt: { type: string, format: date-time }
+        cancelReason: { type: string }
+        approvedBy: { type: string }
+        approvedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    PaymentReceipt:
+      type: object
+      properties:
+        _id: { type: string }
+        number: { type: string }
+        invoiceId: { type: string }
+        customerId: { type: string }
+        branchId: { type: string }
+        financialYear: { type: string }
+        amount: { type: number }
+        method: { $ref: '#/components/schemas/PaymentMethod' }
+        reference: { type: string }
+        proofUrl: { type: string }
+        collectedBy: { type: string }
+        pdfUrl: { type: string }
+        createdAt: { type: string, format: date-time }
+    CreditDebitNote:
+      type: object
+      properties:
+        _id: { type: string }
+        number: { type: string }
+        invoiceId: { type: string }
+        customerId: { type: string }
+        branchId: { type: string }
+        financialYear: { type: string }
+        amount: { type: number }
+        reason: { type: string }
+        pdfUrl: { type: string }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+    VendorInvoice:
+      type: object
+      properties:
+        _id: { type: string }
+        number: { type: string }
+        vendorId: { type: string }
+        serviceRequestIds: { type: array, items: { type: string } }
+        periodStart: { type: string, format: date }
+        periodEnd: { type: string, format: date }
+        amount: { type: number }
+        commissionBreakup:
+          type: object
+          properties:
+            grossAmount: { type: number }
+            commissionRate: { type: number }
+            commissionAmount: { type: number }
+            netPayable: { type: number }
+        status: { $ref: '#/components/schemas/VendorInvoiceStatus' }
+    VendorPayout:
+      type: object
+      properties:
+        _id: { type: string }
+        number: { type: string }
+        vendorId: { type: string }
+        vendorInvoiceIds: { type: array, items: { type: string } }
+        amount: { type: number }
+        status: { $ref: '#/components/schemas/VendorPayoutStatus' }
+        paidAt: { type: string, format: date-time }
+        reference: { type: string }
+    HappyCall:
+      type: object
+      properties:
+        _id: { type: string }
+        serviceRequestId: { type: string }
+        assignedTo: { type: string }
+        performedBy: { type: string }
+        callDate: { type: string, format: date }
+        callTime: { type: string }
+        status: { $ref: '#/components/schemas/HappyCallStatus' }
+        outcome: { type: string }
+        customerSatisfaction: { type: integer, minimum: 1, maximum: 5 }
+        remarks: { type: string }
+        reopenRequested: { type: boolean }
+        escalationRequired: { type: boolean }
+        nextFollowUpDate: { type: string, format: date-time }
+        recordingUrl: { type: string }
+        retryCount: { type: integer }
+    Notification:
+      type: object
+      properties:
+        _id: { type: string }
+        templateId: { type: string }
+        triggerKey: { type: string }
+        channel: { $ref: '#/components/schemas/NotificationChannel' }
+        recipientUserId: { type: string }
+        recipientMobile: { type: string }
+        recipientEmail: { type: string }
+        subject: { type: string }
+        body: { type: string }
+        status: { $ref: '#/components/schemas/NotificationStatus' }
+        retryCount: { type: integer }
+        sentAt: { type: string, format: date-time }
+        readAt: { type: string, format: date-time }
+        failureReason: { type: string }
+    NotificationTemplate:
+      type: object
+      properties:
+        _id: { type: string }
+        triggerKey: { type: string }
+        channel: { $ref: '#/components/schemas/NotificationChannel' }
+        subjectTemplate: { type: string }
+        bodyTemplate: { type: string }
+        variables: { type: array, items: { type: string } }
+        active: { type: boolean }
+    Campaign:
+      type: object
+      properties:
+        _id: { type: string }
+        name: { type: string }
+        channel: { type: string, enum: [WHATSAPP, EMAIL] }
+        templateId: { type: string }
+        audienceFilter:
+          type: object
+          properties:
+            tags: { type: array, items: { type: string } }
+            segments: { type: array, items: { type: string } }
+            customerType: { type: string, enum: [INDIVIDUAL, BUSINESS] }
+        scheduledAt: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/CampaignStatus' }
+        stats:
+          type: object
+          properties:
+            sent: { type: integer }
+            delivered: { type: integer }
+            read: { type: integer }
+            failed: { type: integer }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+    AiSettings:
+      type: object
+      properties:
+        _id: { type: string }
+        provider: { type: string, enum: [GEMINI, OPENAI] }
+        aiModel: { type: string, description: "Serialized as aiModel to avoid colliding with Mongoose's Document.model()" }
+        enabled: { type: boolean }
+        featureFlags:
+          type: object
+          properties:
+            CALL_SUMMARIZATION: { type: boolean }
+            COMPLAINT_CLASSIFICATION: { type: boolean }
+        usageLimits:
+          type: object
+          properties:
+            maxRequestsPerDay: { type: integer }
+            maxTokensPerDay: { type: integer }
+            perRoleMaxRequestsPerDay: { type: object, additionalProperties: { type: integer } }
+    AiFeatureResult:
+      type: object
+      properties:
+        aiAvailable: { type: boolean }
+        reason: { type: string, enum: [DISABLED, AI_LIMIT_REACHED, PROVIDER_NOT_CONFIGURED, FAILED], nullable: true }
+        text: { type: string, nullable: true, description: "summarize-call only" }
+        category: { type: string, nullable: true, description: "classify-complaint only" }
+    ImportResult:
+      type: object
+      properties:
+        successCount: { type: integer }
+        failureCount: { type: integer }
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              row: { type: integer }
+              field: { type: string }
+              code: { type: string }
+              message: { type: string }
+              rawValue: { type: object }
+        createdIds: { type: array, items: { type: string } }
+        dryRun: { type: boolean }
