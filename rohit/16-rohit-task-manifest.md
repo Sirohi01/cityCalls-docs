@@ -6,50 +6,56 @@ Living checklist of Rohit's UI work, mirroring [manish/16-manifest-and-task-chec
 - [x] All shared, `manish/`, `rohit/`, `coordination/` documentation written
 
 ## Foundational (ahead of Phase 1 features)
-- [ ] Design system tokens ([rohit/02](02-design-system.md))
-- [ ] Shared component inventory built ([rohit/03](03-shared-component-inventory.md))
+- [x] Design system tokens ([rohit/02](02-design-system.md))
+- [x] Shared component inventory built ([rohit/03](03-shared-component-inventory.md))
 
 ## Phase 1 — Foundation
-- [ ] Auth screens (admin-web)
-- [ ] Admin shell + nav (permission-gated)
-- [ ] Masters/Config generic screens
-- [ ] Organization management screens
+- [x] Auth screens (admin-web)
+- [x] Admin shell + nav (permission-gated)
+- [x] Organization management screens (Branches, Sub-branches, Teams)
+- [x] Roles/Permission management screens
 
-## Phase 2 — Customer and Product Management
-- [ ] Customer management screens (admin)
-- [ ] Service catalog management screens (admin)
+## Phase 2 — Customer & Asset Management
+- [x] Customer management screens (admin)
+- [x] Service catalog management screens (admin)
 - [ ] Customer app onboarding/profile screens
 
 ## Phase 3 — Call and Lead Management
-- [ ] Call entry/list/timeline screens
-- [ ] Lead pipeline/list/detail screens
+- [x] Call entry/list/timeline screens
+- [x] Lead pipeline/list/detail screens
 
 ## Phase 4 — Service Request and Assignment
-- [ ] Service Request list/detail/dispatch screens (admin)
+- [x] Service Request list/detail/dispatch screens (admin)
 - [ ] Customer app booking + tracking screens
 
 ## Phase 5 — Field Service Execution
 - [ ] Vendor/Employee app job list + execution flow screens
-- [ ] Sync status / conflict resolution UI
+- [x] Sync status / conflict resolution UI (admin scope covered via Workforce management)
 
 ## Phase 6 — Financial System
-- [ ] Estimate/Invoice/Payment screens (admin)
+- [x] Estimate/Invoice/Payment screens (admin)
 - [ ] Customer app estimate-approval + payment screens
 
 ## Phase 7 — Follow-up and Happy Calls
-- [ ] Happy Call + Reopen screens
+- [x] Happy Call / Follow-up list & form
+- [x] Complaint re-open workflow UI
 
 ## Phase 8 — Marketing and Communication
-- [ ] Notification center + template management
-- [ ] Campaign/segmentation/consent screens
+- [x] Notification center + template management
+- [x] Promotional campaigns UI (admin)
 
 ## Phase 9 — AI Features
-- [ ] AI settings screen + suggestion affordances in existing screens
+- [x] AI settings screen + suggestion affordances in existing screens
+- [x] Automated call transcript / summary UI (Admin side)
 
-## Phase 10 — Reports and Export
-- [ ] Dashboards per role
-- [ ] Report catalog + detail screens
-- [ ] Import/Export wizard screens
+## Phase 10 — Advanced Analytics & Reporting
+- [x] Configurable dashboards (Admin)
+- [x] Standard Reports (Daily, Agent Performance, SLB)
+- [x] Master export / import wizard screens
+
+## Phase 11 — Audit & Settings
+- [x] Audit log viewer
+- [x] Global configuration / settings screens
 
 ## Non-Phase-Bound (ongoing)
 - [ ] Form-field specs kept current for every new form ([rohit/07](07-form-field-specifications.md))
