@@ -1,3 +1,4 @@
+
 # Coordination 08 — Change Request Process
 
 Governs any change to a frozen contract: API shape, field name, enum value, DB schema field, status/permission rule. Applies whether the change originates from Manish (backend reality diverged), Rohit (UI need reveals a gap), or the user (new/changed business requirement).
